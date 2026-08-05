@@ -126,6 +126,7 @@ def register(app: Client):
         "restart", "shutdown", "broadcast", "stats", "maintenance",
         "addadmin", "removeadmin", "addchannel", "removechannel", "reindex",
         "backup", "restore", "ban", "unban", "favorites", "history", "profile",
+        "channeltitles",
     ]))
     @safe_handler
     @not_banned
@@ -361,3 +362,4 @@ async def deliver_file_by_token(client: Client, message: Message, sid: str):
         ["qualities"][session["quality"]]["audios"][session["audio"]]
     )
     await client.send_document(message.chat.id, file_info["file_id"], caption=f"🎬 {anime['title']}")
+        

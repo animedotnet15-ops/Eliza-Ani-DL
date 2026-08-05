@@ -59,17 +59,45 @@ async def _index_message(message) -> bool:
 
 async def _find_latest_message_id(client: Client, channel_id: int) -> int:
     """Bots can't call GetHistory, so we binary-search for the highest
-    existing message id using GetMessages (which bots ARE allowed to call)."""
-    lo, hi = 1, 1
+    existing message id using GetMessages (which bots ARE allowed to call).
 
-    # Exponential search to find an upper bound that doesn't exist
+    Message ID 1 (or the first several IDs) can be deleted/inaccessible
+    even in a channel with plenty of real content further along, so we
+    can't just assume ID 1 exists and bail out to "latest=1" if it
+    doesn't - that would make a real channel look empty forever. Instead
+    we probe increasingly large batches from the start until we find ANY
+    existing message, then exponential/binary search forward from there.
+    """
+    PROBE_BATCH = 200
+    probe_start = 1
+    anchor = 0  # highest confirmed-existing id found so far (0 = none yet)
+
+    while probe_start <= 5_000_000:
+        batch_ids = list(range(probe_start, probe_start + PROBE_BATCH))
+        msgs = await client.get_messages(channel_id, batch_ids)
+        existing_ids = [
+            batch_ids[i] for i, m in enumerate(msgs)
+            if m is not None and not m.empty
+        ]
+        if existing_ids:
+            anchor = max(existing_ids)
+            break
+        probe_start += PROBE_BATCH
+
+    if anchor == 0:
+        return 0  # genuinely no accessible messages found in the whole range
+
+    lo, hi = anchor, anchor
+
+    # Exponential search forward from the confirmed anchor to find an
+    # upper bound that doesn't exist.
     while True:
+        hi = max(hi * 2, hi + 1)
         msgs = await client.get_messages(channel_id, list(range(hi, hi + 1)))
         exists = bool(msgs) and msgs[0] is not None and not msgs[0].empty
         if not exists:
             break
         lo = hi
-        hi *= 2
         if hi > 5_000_000:  # sane hard ceiling
             break
 

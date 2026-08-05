@@ -103,6 +103,14 @@ async def remove_file_entry(channel_id: int, message_id: int):
     await indexed_messages.delete_one({"channel_id": channel_id, "message_id": message_id})
 
 
+async def get_indexed_titles_for_channel(channel_id: int, limit: int = 30) -> list:
+    """Returns the parsed anime_id/file_name for each indexed message in a
+    channel - useful for debugging whether the parser is extracting
+    sensible titles from that channel's actual filenames/captions."""
+    cursor = indexed_messages.find({"channel_id": channel_id}).limit(limit)
+    return [doc async for doc in cursor]
+
+
 async def is_indexed(channel_id: int, message_id: int) -> bool:
     return await indexed_messages.find_one({"channel_id": channel_id, "message_id": message_id}) is not None
 
@@ -149,3 +157,4 @@ async def recommend_by_genre(genres: list, exclude_id: str, limit: int = 6) -> l
 
 async def total_anime() -> int:
     return await media.count_documents({})
+    

@@ -53,27 +53,79 @@ async def _index_message(message):
     LOGGER.info(f"Indexed: {parsed.title} {season_key(parsed.season)}{episode_key(parsed.episode)} [{parsed.quality}] {parsed.audio}")
 
 
+async def _find_latest_message_id(client: Client, channel_id: int) -> int:
+    """Bots can't call GetHistory, so we binary-search for the highest
+    existing message id using GetMessages (which bots ARE allowed to call)."""
+    lo, hi = 1, 1
+
+    # Exponential search to find an upper bound that doesn't exist
+    while True:
+        msgs = await client.get_messages(channel_id, list(range(hi, hi + 1)))
+        exists = bool(msgs) and msgs[0] is not None and not msgs[0].empty
+        if not exists:
+            break
+        lo = hi
+        hi *= 2
+        if hi > 5_000_000:  # sane hard ceiling
+            break
+
+    # Binary search between lo (exists) and hi (doesn't exist) for the exact edge
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        msgs = await client.get_messages(channel_id, [mid])
+        exists = bool(msgs) and msgs[0] is not None and not msgs[0].empty
+        if exists:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 async def backfill_channel(client: Client, channel_id: int, batch_size: int = 200):
     """One-off full scan of a channel's history (used when a channel is
-    first added, and periodically to catch anything missed)."""
+    first added, and periodically to catch anything missed).
+
+    Bots cannot call messages.GetHistory (Telegram returns
+    BOT_METHOD_INVALID), so instead of client.get_chat_history() we fetch
+    messages in ID-range batches via client.get_messages(), which bots are
+    allowed to use.
+    """
     last_id = await channels_db.get_last_indexed_id(channel_id)
-    newest_seen = last_id
     count = 0
 
     try:
-        async for message in client.get_chat_history(channel_id, limit=0):
-            if message.id <= last_id:
-                break
-            if message.id > newest_seen:
-                newest_seen = message.id
-            if message.media:
-                await _index_message(message)
-                count += 1
-            if count % batch_size == 0 and count > 0:
-                await asyncio.sleep(1)  # be gentle with flood limits
-    except FloodWait as e:
-        LOGGER.warning(f"FloodWait during backfill of {channel_id}: sleeping {e.value}s")
-        await asyncio.sleep(e.value)
+        latest_id = await _find_latest_message_id(client, channel_id)
+    except Exception as e:
+        LOGGER.error(f"Could not determine latest message id for {channel_id}: {e}")
+        return 0
+
+    if latest_id <= last_id:
+        LOGGER.info(f"Backfilled channel {channel_id}: 0 new files indexed (nothing new).")
+        return 0
+
+    newest_seen = last_id
+    ids = list(range(last_id + 1, latest_id + 1))
+
+    try:
+        for i in range(0, len(ids), batch_size):
+            chunk = ids[i:i + batch_size]
+            try:
+                messages = await client.get_messages(channel_id, chunk)
+            except FloodWait as e:
+                LOGGER.warning(f"FloodWait during backfill of {channel_id}: sleeping {e.value}s")
+                await asyncio.sleep(e.value)
+                messages = await client.get_messages(channel_id, chunk)
+
+            for message in messages:
+                if not message or message.empty:
+                    continue
+                if message.id > newest_seen:
+                    newest_seen = message.id
+                if message.media:
+                    await _index_message(message)
+                    count += 1
+
+            await asyncio.sleep(0.5)  # be gentle with flood limits
     except Exception as e:
         LOGGER.error(f"Backfill error for channel {channel_id}: {e}")
 

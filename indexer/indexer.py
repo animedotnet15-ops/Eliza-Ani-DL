@@ -18,18 +18,21 @@ def _get_media_object(message):
     return message.video or message.document
 
 
-async def _index_message(message):
+async def _index_message(message) -> bool:
+    """Returns True only if a file entry was actually added/updated."""
     media_obj = _get_media_object(message)
     if not media_obj:
-        return
+        LOGGER.debug(f"Skip {message.chat.id}/{message.id}: media type not in {MEDIA_FILTER_TYPES} (got {message.media}).")
+        return False
 
     file_name = getattr(media_obj, "file_name", None) or ""
     caption = message.caption or ""
     if not file_name and not caption:
-        return
+        LOGGER.debug(f"Skip {message.chat.id}/{message.id}: no file_name and no caption to parse a title from.")
+        return False
 
     if await media_db.is_indexed(message.chat.id, message.id):
-        return  # already indexed, dedupe
+        return False  # already indexed, dedupe (not a problem, just not "new")
 
     parsed = parse(file_name, caption)
     thumb = ""
@@ -51,6 +54,7 @@ async def _index_message(message):
         caption=caption,
     )
     LOGGER.info(f"Indexed: {parsed.title} {season_key(parsed.season)}{episode_key(parsed.episode)} [{parsed.quality}] {parsed.audio}")
+    return True
 
 
 async def _find_latest_message_id(client: Client, channel_id: int) -> int:
@@ -81,7 +85,7 @@ async def _find_latest_message_id(client: Client, channel_id: int) -> int:
     return lo
 
 
-async def backfill_channel(client: Client, channel_id: int, batch_size: int = 200):
+async def backfill_channel(client: Client, channel_id: int, batch_size: int = 200, force: bool = False):
     """One-off full scan of a channel's history (used when a channel is
     first added, and periodically to catch anything missed).
 
@@ -89,9 +93,15 @@ async def backfill_channel(client: Client, channel_id: int, batch_size: int = 20
     BOT_METHOD_INVALID), so instead of client.get_chat_history() we fetch
     messages in ID-range batches via client.get_messages(), which bots are
     allowed to use.
+
+    force=True ignores the stored checkpoint and rescans from message 1 -
+    use this when you suspect the checkpoint is stale (e.g. a channel was
+    re-added and you want a guaranteed full rescan for debugging).
     """
-    last_id = await channels_db.get_last_indexed_id(channel_id)
+    last_id = 0 if force else await channels_db.get_last_indexed_id(channel_id)
     count = 0
+    media_seen = 0
+    scanned = 0
 
     try:
         latest_id = await _find_latest_message_id(client, channel_id)
@@ -100,7 +110,7 @@ async def backfill_channel(client: Client, channel_id: int, batch_size: int = 20
         return 0
 
     if latest_id <= last_id:
-        LOGGER.info(f"Backfilled channel {channel_id}: 0 new files indexed (nothing new).")
+        LOGGER.info(f"Backfilled channel {channel_id}: 0 new files indexed (nothing new, checkpoint at {last_id}).")
         return 0
 
     newest_seen = last_id
@@ -119,11 +129,13 @@ async def backfill_channel(client: Client, channel_id: int, batch_size: int = 20
             for message in messages:
                 if not message or message.empty:
                     continue
+                scanned += 1
                 if message.id > newest_seen:
                     newest_seen = message.id
                 if message.media:
-                    await _index_message(message)
-                    count += 1
+                    media_seen += 1
+                    if await _index_message(message):
+                        count += 1
 
             await asyncio.sleep(0.5)  # be gentle with flood limits
     except Exception as e:
@@ -132,7 +144,10 @@ async def backfill_channel(client: Client, channel_id: int, batch_size: int = 20
     if newest_seen > last_id:
         await channels_db.set_last_indexed_id(channel_id, newest_seen)
 
-    LOGGER.info(f"Backfilled channel {channel_id}: {count} new files indexed.")
+    LOGGER.info(
+        f"Backfilled channel {channel_id}: {count} new files indexed "
+        f"({scanned} messages scanned, {media_seen} had media, range {last_id + 1}-{latest_id})."
+    )
     return count
 
 
@@ -167,8 +182,8 @@ def register_live_handlers(client: Client):
     LOGGER.info("Live indexer handlers registered.")
 
 
-async def full_scan_all_channels(client: Client):
+async def full_scan_all_channels(client: Client, force: bool = False):
     channels = await channels_db.list_channels(enabled_only=True)
     for chan in channels:
-        await backfill_channel(client, chan["channel_id"])
+        await backfill_channel(client, chan["channel_id"], force=force)
         

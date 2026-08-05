@@ -187,9 +187,25 @@ def register(app: Client):
     @safe_handler
     @admin_only
     async def reindex_cmd(client: Client, message: Message):
-        from indexer.indexer import full_scan_all_channels
-        status = await message.reply_text("🗂 Running full index scan across all channels...")
-        await full_scan_all_channels(client)
+        from indexer.indexer import backfill_channel, full_scan_all_channels
+
+        args = message.command[1:]
+        force = "force" in args
+        channel_arg = next((a for a in args if a != "force"), None)
+
+        if channel_arg:
+            cid = int(channel_arg)
+            status = await message.reply_text(
+                f"🗂 {'Force ' if force else ''}Rescanning channel `{cid}`..."
+            )
+            count = await backfill_channel(client, cid, force=force)
+            await status.edit_text(f"✅ Done. {count} new file(s) indexed from `{cid}`.")
+            return
+
+        status = await message.reply_text(
+            f"🗂 Running {'FORCE ' if force else ''}full index scan across all channels..."
+        )
+        await full_scan_all_channels(client, force=force)
         await status.edit_text("✅ Indexing complete.")
 
     @app.on_message(filters.command("backup"))
@@ -232,3 +248,4 @@ def register(app: Client):
                 os.remove(path)
             except OSError:
                 pass
+                

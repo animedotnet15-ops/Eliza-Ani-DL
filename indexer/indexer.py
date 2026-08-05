@@ -1,6 +1,6 @@
 import asyncio
 
-from pyrogram import Client
+from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.handlers import MessageHandler, DeletedMessagesHandler, EditedMessageHandler
 
@@ -109,9 +109,9 @@ def register_live_handlers(client: Client):
         for message in messages:
             await media_db.remove_file_entry(message.chat.id, message.id)
 
-    client.add_handler(MessageHandler(on_new_message))
-    client.add_handler(EditedMessageHandler(on_edited_message))
-    client.add_handler(DeletedMessagesHandler(on_deleted_messages))
+    client.add_handler(MessageHandler(on_new_message, filters.channel))
+    client.add_handler(EditedMessageHandler(on_edited_message, filters.channel))
+    client.add_handler(DeletedMessagesHandler(on_deleted_messages, filters.channel))
     LOGGER.info("Live indexer handlers registered.")
 
 
@@ -119,3 +119,4 @@ async def full_scan_all_channels(client: Client):
     channels = await channels_db.list_channels(enabled_only=True)
     for chan in channels:
         await backfill_channel(client, chan["channel_id"])
+        

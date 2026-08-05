@@ -183,6 +183,23 @@ def register(app: Client):
         lines = [f"• {c.get('title', 'Unknown')} — `{c['channel_id']}` {'🟢' if c.get('enabled') else '🔴'}" for c in chans]
         await message.reply_text("📡 **Source Channels:**\n\n" + "\n".join(lines))
 
+    @app.on_message(filters.command("channeltitles"))
+    @safe_handler
+    @admin_only
+    async def channeltitles_cmd(client: Client, message: Message):
+        if len(message.command) < 2:
+            await message.reply_text("Usage: `/channeltitles <channel_id>` — shows what titles got parsed from that channel's files (for debugging search misses).")
+            return
+        cid = int(message.command[1])
+        entries = await media_db.get_indexed_titles_for_channel(cid)
+        if not entries:
+            await message.reply_text(f"No indexed messages found for `{cid}` yet. Run `/reindex {cid} force` first.")
+            return
+        lines = [f"• **{e.get('anime_id', '?')}** — `{e.get('file_name', '?')}`" for e in entries]
+        await message.reply_text(
+            f"📄 **Parsed titles from `{cid}`** (first {len(entries)}):\n\n" + "\n".join(lines)
+        )
+
     @app.on_message(filters.command("reindex"))
     @safe_handler
     @admin_only

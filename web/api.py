@@ -175,5 +175,21 @@ def register_api_routes(app_: web.Application):
     app_.router.add_get("/api/file/{id}", api_file)
     app_.router.add_get("/api/latest", api_latest)
     app_.router.add_get("/api/popular", api_popular)
-    LOGGER.info("REST API routes registered: /api/search /api/file/{id} /api/latest /api/popular")
 
+    @web.middleware
+    async def cors_middleware(request: web.Request, handler):
+        if request.method == "OPTIONS":
+            resp = web.Response()
+        else:
+            resp = await handler(request)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    app_.middlewares.append(cors_middleware)
+    for route in ("/api/search", "/api/file/{id}", "/api/latest", "/api/popular"):
+        app_.router.add_route("OPTIONS", route, lambda request: web.Response())
+
+    LOGGER.info("REST API routes registered: /api/search /api/file/{id} /api/latest /api/popular")
+  
